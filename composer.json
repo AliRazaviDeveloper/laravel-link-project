@@ -1,0 +1,72 @@
+{
+    "name": "shortwave/api",
+    "description": "Link shortening and click-intelligence REST API.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4",
+        "ext-intl": "*",
+        "ext-json": "*",
+        "ext-mongodb": "*",
+        "ext-pcntl": "*",
+        "ext-redis": "*",
+        "laravel/framework": "^12.28",
+        "laravel/sanctum": "^4.2",
+        "mongodb/laravel-mongodb": "^5.4",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "larastan/larastan": "^3.1",
+        "laravel/pint": "^1.18",
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.5",
+        "pestphp/pest": "^4.0",
+        "pestphp/pest-plugin-laravel": "^4.0",
+        "symfony/yaml": "^8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Shortwave\\": "src/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-autoload-dump": [
+            "@php artisan package:discover --ansi"
+        ],
+        "lint": "pint --test",
+        "fix": "pint",
+        "stan": "phpstan analyse --memory-limit=1G",
+        "test": "pest --colors=always",
+        "test:unit": "pest --testsuite=Unit --colors=always",
+        "test:coverage": "pest --coverage --min=85 --colors=always",
+        "check": [
+            "@lint",
+            "@stan",
+            "@test"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

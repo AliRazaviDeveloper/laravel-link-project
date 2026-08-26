@@ -1,0 +1,200 @@
+name: shortwave
+
+# ---------------------------------------------------------------------------
+# Every PHP container runs the same image and differs only in CONTAINER_ROLE
+# and its command. One image means the worker cannot drift from the code the
+# web tier is serving, which is the usual source of "works on web, fails on
+# queue" bugs.
+# ---------------------------------------------------------------------------
+x-php: &php
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+    target: ${SHORTWAVE_BUILD_TARGET:-development}
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  env_file: [.env]
+  volumes:
+    # vendor/ stays on the host so every container sees the same dependencies and an
+    # IDE can index them. It is installed from inside the container (`make install`),
+    # never from the host, which has no PHP.
+    - .:/var/www/html:cached
+  depends_on:
+    postgres: {condition: service_healthy}
+    mongodb: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  restart: unless-stopped
+
+services:
+
+  # --- HTTP ---------------------------------------------------------------
+
+  nginx:
+    image: nginx:1.29-alpine
+    ports:
+      - "${SHORTWAVE_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./public:/var/www/html/public:ro
+    depends_on:
+      app: {condition: service_started}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/up"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  app:
+    <<: *php
+    environment:
+      CONTAINER_ROLE: app
+    # Only this container runs migrations and index sync on boot; the others wait
+    # for it so two of them cannot migrate at once.
+    healthcheck:
+      # FPM has no HTTP surface of its own, so the check is that its socket accepts
+      # connections. nginx in front of it covers the application-level check.
+      test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  # --- Background work ----------------------------------------------------
+
+  worker:
+    <<: *php
+    environment:
+      CONTAINER_ROLE: worker
+    # A dedicated worker for the analytics queue. Click batches are high volume and
+    # low value individually, so they must not sit behind anything more important.
+    command:
+      - php
+      - artisan
+      - queue:work
+      - --queue=analytics,default
+      - --tries=3
+      - --max-time=3600
+      - --sleep=1
+      - --rest=0.2
+    depends_on:
+      app: {condition: service_started}
+      postgres: {condition: service_healthy}
+      mongodb: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    stop_grace_period: 40s
+
+  scheduler:
+    <<: *php
+    environment:
+      CONTAINER_ROLE: scheduler
+    # `schedule:work` polls every minute in-process, which suits a container far
+    # better than a crontab that has to be installed into the image.
+    command: ["php", "artisan", "schedule:work", "--no-interaction"]
+    depends_on:
+      app: {condition: service_started}
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # --- Tooling ------------------------------------------------------------
+
+  # The test runner. Identical to `app` except for its environment: .env.testing is
+  # loaded after .env, so the suite points at its own databases as real environment
+  # variables rather than relying on phpunit.xml, which cannot override them.
+  #
+  # Behind a profile so `docker compose up` does not start it.
+  test:
+    <<: *php
+    profiles: ["tools"]
+    env_file: [".env", ".env.testing"]
+    environment:
+      CONTAINER_ROLE: cli
+    restart: "no"
+    command: ["./vendor/bin/pest", "--colors=always"]
+
+  # --- Stores -------------------------------------------------------------
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-shortwave}
+      POSTGRES_USER: ${DB_USERNAME:-shortwave}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-shortwave}
+      # Skips per-connection locale work on a database that only stores ASCII ids
+      # and URLs, and makes index ordering deterministic across hosts.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${SHORTWAVE_PG_PORT:-55432}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-shortwave} -d ${DB_DATABASE:-shortwave}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mongodb:
+    image: mongo:8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-shortwave}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-shortwave}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-shortwave_analytics}
+    # Standalone, with authentication.
+    #
+    # A single-node replica set would match production's topology more closely, but
+    # MongoDB requires a shared keyFile for internal auth as soon as authorization and
+    # replication are both on, and shipping a keyFile in a repository is worse than the
+    # parity is worth. Production points MONGO_DSN at a real replica set; the write
+    # concern the app asks for is already correct for one, and degrades to w:1 here.
+    command: ["mongod", "--bind_ip_all", "--quiet"]
+    volumes:
+      - mongodb:/data/db
+    ports:
+      - "${SHORTWAVE_MONGO_PORT:-57017}:27017"
+    restart: unless-stopped
+    healthcheck:
+      # Checks that the server accepts writes, not merely that the port is open.
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:8-alpine
+    # Click counters are the one thing in Redis that cannot be recomputed from
+    # another store, so persistence is on: appendonly with per-second fsync loses at
+    # most a second of counts on a hard kill rather than everything since boot.
+    #
+    # No maxmemory is set, so nothing is evicted: every cache entry carries a TTL and
+    # the counters are drained each minute. In production the counters belong on their
+    # own instance, so an LRU policy can protect the cache without ever discarding a
+    # count — hence shortwave.redis.connection being configurable.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "300 10"
+    volumes:
+      - redis:/data
+    ports:
+      - "${SHORTWAVE_REDIS_PORT:-56379}:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres:
+  mongodb:
+  redis:

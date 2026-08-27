@@ -38,12 +38,25 @@ COPY docker/php/conf.d/ /usr/local/etc/php/conf.d/
 COPY docker/php/php-fpm.d/pool.conf /usr/local/etc/php-fpm.d/zz-pool.conf
 
 # Match the host user so bind-mounted files stay writable in development.
+#
+# Both ids may already exist in the base image — a macOS host's GID 20 collides with
+# Alpine's `dialout`, for instance — so an existing group is reused rather than
+# treated as an error.
 ARG UID=1000
 ARG GID=1000
-RUN addgroup -g "$GID" -S app \
-    && adduser -u "$UID" -S -G app -h /var/www -s /bin/bash app \
-    && mkdir -p /var/www/html \
-    && chown -R app:app /var/www
+RUN set -eu; \
+    if getent group "$GID" >/dev/null; then \
+        group="$(getent group "$GID" | cut -d: -f1)"; \
+    else \
+        addgroup -g "$GID" -S app; \
+        group=app; \
+    fi; \
+    if ! getent passwd "$UID" >/dev/null; then \
+        adduser -u "$UID" -S -G "$group" -h /var/www -s /bin/bash app; \
+    fi; \
+    user="$(getent passwd "$UID" | cut -d: -f1)"; \
+    mkdir -p /var/www/html; \
+    chown -R "$user:$group" /var/www
 
 WORKDIR /var/www/html
 

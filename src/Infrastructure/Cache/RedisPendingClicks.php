@@ -29,19 +29,6 @@ final readonly class RedisPendingClicks implements PendingClicks
 
     private const string DIRTY_SET = 'clicks:dirty';
 
-    /**
-     * Reads a counter and deletes it in one step, so two concurrent flush workers
-     * cannot both claim the same clicks.
-     */
-    private const string DRAIN_SCRIPT = <<<'LUA'
-        local total = redis.call('GET', KEYS[1])
-        if total then
-            redis.call('DEL', KEYS[1])
-            return total
-        end
-        return 0
-    LUA;
-
     public function __construct(
         private RedisFactory $redis,
         private string $connection = 'default',
@@ -112,7 +99,12 @@ final readonly class RedisPendingClicks implements PendingClicks
         $counts = [];
 
         foreach ($linkIds as $linkId) {
-            $drained = (int) $client->eval(self::DRAIN_SCRIPT, [$this->counterKey($linkId)], 1);
+            // GETDEL rather than a Lua script: the key prefix Laravel configures is a
+            // phpredis client option, and phpredis does not apply it to the KEYS of an
+            // EVAL. A script would read an unprefixed key, find nothing, and quietly
+            // drop the counts it had just claimed from the dirty set.
+            $drained = $client->command('getdel', [$this->counterKey($linkId)]);
+            $drained = is_numeric($drained) ? (int) $drained : 0;
 
             // A zero means the counter expired, or another worker took it between the
             // pop and the read. Dropping it keeps the caller's map free of no-op

@@ -27,17 +27,13 @@
     </source>
 
     <php>
+        <!--
+            Only PHP-level settings live here. Everything about which database,
+            cache or queue the suite talks to is in .env.testing, because the
+            containers supply .env as real environment variables and those take
+            precedence over anything set from this file.
+        -->
         <env name="APP_ENV" value="testing"/>
-        <env name="DB_DATABASE" value="shortwave_testing"/>
-        <env name="MONGO_DATABASE" value="shortwave_testing"/>
-        <env name="REDIS_DB" value="15"/>
-        <env name="REDIS_CACHE_DB" value="15"/>
-        <env name="CACHE_STORE" value="redis"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
-        <env name="SESSION_DRIVER" value="array"/>
-        <env name="LOG_CHANNEL" value="null"/>
-        <env name="SHORTWAVE_SHORT_DOMAIN" value="https://swv.test"/>
-        <env name="SHORTWAVE_FINGERPRINT_SECRET" value="testing-fingerprint-secret"/>
-        <env name="BCRYPT_ROUNDS" value="4"/>
+        <ini name="memory_limit" value="512M"/>
     </php>
 </phpunit>

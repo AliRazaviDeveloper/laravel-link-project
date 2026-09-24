@@ -59,10 +59,12 @@ final readonly class ProblemDetailsRenderer
     {
         $renderer = new self;
 
+        // Every route, not just the API prefix. The public redirect endpoint is hit by
+        // browsers that send no Accept header, and there are no HTML error views in
+        // this service — without this, an expired short link answers 500 while trying
+        // to render a view that does not exist.
         $exceptions->render(
-            fn (Throwable $exception, Request $request) => $request->expectsJson() || $request->is('api/*')
-                ? $renderer->render($exception, $request)
-                : null,
+            fn (Throwable $exception, Request $request) => $renderer->render($exception, $request),
         );
 
         // Reporting is noise for anything the client caused; only genuine faults

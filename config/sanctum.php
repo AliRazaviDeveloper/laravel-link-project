@@ -15,9 +15,13 @@ return [
     /*
      * Tokens do not expire by default — an API key that stops working overnight is a
      * worse failure mode for a machine client than a long-lived one. Set
-     * SANCTUM_EXPIRATION where a policy requires rotation.
+     * SANCTUM_EXPIRATION to a number of minutes where a policy requires rotation.
+     *
+     * The blank check is load-bearing: an unset key in .env reads as an empty string,
+     * not null, and casting that to int yields a zero-minute expiry — every token
+     * issued would already be expired.
      */
-    'expiration' => env('SANCTUM_EXPIRATION') !== null ? (int) env('SANCTUM_EXPIRATION') : null,
+    'expiration' => filter_var(env('SANCTUM_EXPIRATION'), FILTER_VALIDATE_INT) ?: null,
 
     'token_prefix' => env('SANCTUM_TOKEN_PREFIX', 'sw_'),
 

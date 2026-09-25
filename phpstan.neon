@@ -1,0 +1,29 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    # Level 9 rather than max: level 10 flags every `mixed` that crosses a framework
+    # boundary — request input, cache payloads, Mongo documents — and the honest fix
+    # there is the runtime type checks this code already performs, not a cast that
+    # silences the analyser.
+    level: 9
+
+    paths:
+        - src
+        - config
+        - database
+        - routes
+        # Only the test support classes. Pest binds `$this` inside test closures at
+        # runtime, so every `$this->something` in a spec reads as an undefined property
+        # on Pest's own TestCall — hundreds of errors that say nothing about the code.
+        # The helper classes here are ordinary classes and are analysed normally.
+        - tests/Support
+
+    excludePaths:
+        - vendor
+
+    # Missing iterable value types and generic class checks are part of the level in
+    # PHPStan 2.x, so they are no longer separate switches.
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: true
+

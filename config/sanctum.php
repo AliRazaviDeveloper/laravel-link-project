@@ -10,6 +10,13 @@ return [
      */
     'stateful' => [],
 
+    /*
+     * Suppresses Sanctum's /sanctum/csrf-cookie route, which exists to prime a cookie for
+     * a same-site SPA. With `stateful` empty and no session middleware registered, it is
+     * an endpoint nothing calls and nothing tests.
+     */
+    'routes' => false,
+
     'guard' => [],
 
     /*

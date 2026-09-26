@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION: '8.4'
+
+jobs:
+  # Formatting and static analysis need no databases, so they run first and fail fast.
+  static:
+    name: Lint and analyse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: intl, mongodb, pcntl, redis
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - run: composer install --no-interaction --no-progress --prefer-dist
+
+      - run: composer validate --strict
+
+      - name: Check formatting
+        run: ./vendor/bin/pint --test
+
+      - name: Static analysis
+        run: ./vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+
+    # The same versions compose.yaml runs. All three are real, because the behaviour
+    # worth testing lives in the aggregation pipelines, the unique slug index and the
+    # atomicity of the Redis counters — none of which a fake reproduces.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: shortwave_testing
+          POSTGRES_USER: shortwave
+          POSTGRES_PASSWORD: shortwave
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U shortwave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      mongodb:
+        image: mongo:8
+        env:
+          MONGO_INITDB_ROOT_USERNAME: shortwave
+          MONGO_INITDB_ROOT_PASSWORD: shortwave
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: intl, mongodb, pcntl, redis
+          coverage: pcov
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+        env:
+          # Services are published on localhost here rather than reachable by the
+          # container names compose uses.
+          DB_HOST: 127.0.0.1
+          MONGO_HOST: 127.0.0.1
+          REDIS_HOST: 127.0.0.1
+
+      - name: Create MongoDB indexes
+        run: php artisan shortwave:mongo-sync --ansi
+        env: &test_env
+          # .env.testing supplies the database names; only the hosts differ from the
+          # compose setup, so they are the only thing overridden here.
+          APP_ENV: testing
+          DB_HOST: 127.0.0.1
+          MONGO_HOST: 127.0.0.1
+          REDIS_HOST: 127.0.0.1
+
+      - name: Run the suite
+        run: ./vendor/bin/pest --coverage --min=75 --colors=always
+        env: *test_env
